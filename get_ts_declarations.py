@@ -7,6 +7,8 @@ import pathlib
 
 
 _TYPE_NAME_MAP = {
+    "Boolean": "boolean",
+    "NativeArray": "Array<any>",
     "NativeObject": "object",
     "Object": "any",
     "ReturnInterface": "Function",
@@ -45,9 +47,10 @@ type_nodes = {}
 for node in class_node.body:
     match node:
         case j_tree.FieldDeclaration(
-            type=j_tree.ReferenceType(), declarators=[j_tree.VariableDeclarator()]
+            type=j_tree.ReferenceType(),
+            declarators=[j_tree.VariableDeclarator(name=name)],
         ):
-            type_nodes[node.declarators[0].name] = node.type
+            type_nodes[name] = node.type
 
 
 # find method node
@@ -68,12 +71,13 @@ for node in method_node.body:
             expression=j_tree.MethodInvocation(
                 qualifier="interp",
                 member="addJavaObjectToJs",
-                arguments=[j_tree.Literal(), j_tree.MemberReference()],
+                arguments=[
+                    j_tree.Literal(value=literal_string),
+                    j_tree.MemberReference(member=name),
+                ],
             )
-        ):
-            literal_value = eval(node.expression.arguments[0].value)
-            if isinstance(literal_value, str):
-                entries[literal_value] = type_nodes[node.expression.arguments[1].member]
+        ) if type(eval(literal_string)) is str:
+            entries[eval(literal_string)] = type_nodes[name]
 
 #
 
@@ -130,11 +134,7 @@ for path in get_file_paths(pathlib.Path(arguments.path, _)):
     # find class or interface node
     for _, node in document_node:
         match node:
-            case j_tree.ClassDeclaration():
-                parent_node = node
-                break
-
-            case j_tree.InterfaceDeclaration():
+            case j_tree.ClassDeclaration() | j_tree.InterfaceDeclaration():
                 parent_node = node
                 break
     else:
@@ -145,24 +145,25 @@ for path in get_file_paths(pathlib.Path(arguments.path, _)):
     for node in parent_node.body:
         match node:
             case j_tree.FieldDeclaration(
-                annotations=[j_tree.Annotation(name="PhonkField")],
-                declarators=[j_tree.VariableDeclarator()],
+                declarators=[j_tree.VariableDeclarator(name=name)]
             ):
-                _ = (node.declarators[0].name, _Field(type_node=node.type))
-                attributes.append(_)
+                _ = (annotation.name == "PhonkField" for annotation in node.annotations)
+                if any(_):
+                    attributes.append((name, _Field(type_node=node.type)))
 
-            case j_tree.MethodDeclaration(
-                annotations=[j_tree.Annotation(name="PhonkMethod")]
-            ):
-                arguments = {}
+            case j_tree.MethodDeclaration():
+                _ = node.annotations
+                if any(annotation.name == "PhonkMethod" for annotation in _):
+                    arguments = {}
 
-                for parameter_node in node.parameters:
-                    arguments[parameter_node.name] = _Argument(
-                        type_node=parameter_node.type, is_args=parameter_node.varargs
-                    )
+                    for parameter_node in node.parameters:
+                        arguments[parameter_node.name] = _Argument(
+                            type_node=parameter_node.type,
+                            is_args=parameter_node.varargs,
+                        )
 
-                _ = _Method(return_type=node.return_type, arguments=arguments)
-                attributes.append((node.name, _))
+                    _ = _Method(return_type=node.return_type, arguments=arguments)
+                    attributes.append((node.name, _))
 
     if isinstance(parent_node, j_tree.ClassDeclaration):
         declarations[parent_node.name] = _Class(
@@ -193,7 +194,7 @@ def get_type_string(node):
     strings = [_TYPE_NAME_MAP.get(node.name, node.name)]
 
     if isinstance(node, j_tree.ReferenceType):
-        if node.arguments is not None:  # TODO when?
+        if node.arguments is not None:
             strings.append("<")
 
             for type_argument in node.arguments:
@@ -203,29 +204,42 @@ def get_type_string(node):
             strings.pop()
             strings.append(">")
 
-        if node.sub_type is not None:  # TODO when?
+        if node.sub_type is not None:
             strings.append(".")
             strings.append(get_type_string(node.sub_type))
 
-    if node.dimensions is not None and len(node.dimensions) != 0:  # TODO when?
-        strings.append("[")
+    if node.dimensions is not None:
         for dimension in node.dimensions:
             assert dimension is None
-        strings.append("]")
+            strings.append("[]")
 
     return "".join(strings)
 
 
 for name, declaration in declarations.items():
+    if declaration.extends is None:
+        extends = None
+
+    else:
+        extends = get_type_string(declaration.extends)
+        if extends not in declarations:
+            extends = None
+
+    if isinstance(declaration, _Class) and declaration.implements is not None:
+        _ = (get_type_string(node) for node in declaration.implements)
+        implements = [type_string for type_string in _ if type_string in declarations]
+
+        if len(implements) == 0:
+            implements = None
+
+    else:
+        implements = None
+
     _ = "declare {} {}{}{} {{".format(
         {_Class: "class", _Interface: "interface"}[type(declaration)],
         name,
-        ""
-        if declaration.extends is None
-        else (" extends " + get_type_string(declaration.extends)),
-        (" implements " + ", ".join(get_type_string(_) for _ in declaration.implements))
-        if isinstance(declaration, _Class) and declaration.implements is not None
-        else "",
+        "" if extends is None else (" extends " + extends),
+        "" if implements is None else (" implements " + ", ".join(implements)),
     )
     print(_)
 
