@@ -4,6 +4,7 @@ import javalang.tree as j_tree
 import argparse
 import dataclasses
 import pathlib
+import re
 
 
 _TYPE_NAME_MAP = {
@@ -108,6 +109,7 @@ class _Argument:
 class _Method:
     return_type: j_ast.Node | None
     arguments: dict[str, _Argument]
+    documentation: str | None
 
 
 @dataclasses.dataclass
@@ -162,7 +164,19 @@ for path in get_file_paths(pathlib.Path(arguments.path, _)):
                             is_args=parameter_node.varargs,
                         )
 
-                    _ = _Method(return_type=node.return_type, arguments=arguments)
+                    if node.documentation is None:
+                        documentation = None
+
+                    else:
+                        documentation, _ = re.subn(
+                            r"^\s+\*", " *", node.documentation, flags=re.MULTILINE
+                        )
+
+                    _ = _Method(
+                        return_type=node.return_type,
+                        arguments=arguments,
+                        documentation=documentation,
+                    )
                     attributes.append((node.name, _))
 
     if isinstance(parent_node, j_tree.ClassDeclaration):
@@ -249,6 +263,9 @@ for name, declaration in declarations.items():
                 print("  {}: {};".format(name, get_type_string(attribute.type_node)))
 
             case _Method():
+                if attribute.documentation is not None:
+                    print("  ", attribute.documentation.replace("\n", "\n  "), sep="")
+
                 _ = ", ".join(
                     "{}{}: {}{}".format(
                         "..." if argument.is_args else "",
@@ -268,4 +285,4 @@ for name, declaration in declarations.items():
 
 
 for name, type_node in entries.items():
-    print("export var {}: {};".format(name, get_type_string(type_node)))
+    print("declare var {}: {};".format(name, get_type_string(type_node)))
